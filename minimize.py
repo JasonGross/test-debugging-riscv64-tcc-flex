@@ -19,7 +19,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 X86_FLEX = os.path.join(HERE, "build", "bx86", "flex")
-CHAIN_FLEX = os.path.join(HERE, "chain-binaries", "flex-riscv64-chain")
+CHAIN_FLEX = os.environ.get("ORACLE_FLEX", os.path.join(HERE, "build", "brv64-vintage-chainmusl", "flex"))
 MAGIC = b"allocation of macro definition failed"
 QEMU = shutil.which("qemu-riscv64-static") or shutil.which("qemu-riscv64")
 

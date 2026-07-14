@@ -1,6 +1,7 @@
 build*/
-minimized.l.tmp*
-*.pyc
-setup-fresh.log
-repro-fresh.log
+setup-*.log
+repro-*.log
+minimize.log
+musl-1.1.24.tar.gz
 tmp*.l
+*.pyc

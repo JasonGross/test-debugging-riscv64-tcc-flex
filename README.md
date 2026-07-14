@@ -1,75 +1,101 @@
 # test-debugging-riscv64-tcc-flex
 
-Reproducer for a **runtime failure of tcc-compiled flex 2.5.39 on riscv64**,
-found while working on the riscv64 Guix full-source bootstrap
-([ekaitz-zarraga/commencement.scm](https://codeberg.org/ekaitz-zarraga/commencement.scm)):
-a flex built by the bootstrap chain's tcc lineage builds fine but dies at
-runtime on GCC 4.6.4's `gengtype-lex.l`:
+Reproducer and root-cause analysis for a TinyCC riscv64 **long-double
+codegen bug** that broke the riscv64 Guix full-source bootstrap
+([ekaitz-zarraga/commencement.scm](https://codeberg.org/ekaitz-zarraga/commencement.scm)).
+
+## Symptom → root cause
+
+The original symptom: flex 2.5.39, built inside the bootstrap chain, dies on
+GCC 4.6.4's `gengtype-lex.l`:
 
 ```
 flex: fatal internal error, allocation of macro definition failed
 ```
 
-That error is raised in flex's m4-define buffer machinery (`buf.c` /
-`filter.c`, present since flex 2.5.31), pointing at varargs-flavored
-codegen; notably, the chain tcc's riscv64 target implements `va_list` as a
-bare `char *` walked by header macros (`include/stdarg.h` in
-[ekaitz-zarraga/tcc](https://github.com/ekaitz-zarraga/tcc)), rather than
-the ABI-native scheme upstream tcc has since grown.
+Delta-debugging the input (213 → 12 lines, `minimize.py` / `minimized.l`)
+pointed at flex's start-condition handling; reading that call site
+(`main.c:456`) shows the allocation size is computed with **`log10(i)`** —
+and the crash is the allocation "failing" because **musl's `log10` returns
+garbage** (or segfaults outright: `log10-probe.c`).
 
-## The matrix (what CI shows)
+The libc is the broken artifact, not flex: byte-identical flex objects work
+when linked against a gcc-built musl and fail against the chain's tcc-built
+musl. The chain's tcc — a snapshot of upstream mob taken 2024-06-01
+(byte-identical to
+[`8cd21e91`](https://github.com/TinyCC/tinycc/commit/8cd21e91); see
+`tcc-chain-vintage/PROVENANCE.md`) — **miscompiles musl's libm on riscv64**:
+long-double constants are emitted corrupted.
 
-| leg | compiler | arch | result on `gengtype-lex.l` |
-|---|---|---|---|
-| 1 | upstream tcc ([mob @ `d9d02c5`](https://github.com/TinyCC/tinycc)) | x86_64 | **passes** |
-| 2 | upstream tcc (same) | riscv64 (qemu-user) | **passes** |
-| 3 | bootstrap-chain tcc lineage (vendored binary) | riscv64 (qemu-user) | **fails** with the error above |
+`git bisect` over upstream mob with `bisect-oracle.sh` (build tcc → build
+musl 1.1.24 chain-style → run the log10 probe) identifies the fix:
 
-Legs 1–2 are built from source by `setup.sh` (pinned upstream tcc as
-native + cross compiler, gcc-built musl 1.2.5 sysroots on both arches so
-libc quality is held constant, flex 2.5.39 compiled by tcc). Leg 3 is a
-vendored static binary — it comes out of a GNU Guix bootstrap chain and
-cannot be casually rebuilt; see
-[`chain-binaries/PROVENANCE.md`](chain-binaries/PROVENANCE.md).
+> [`923fba83`](https://github.com/TinyCC/tinycc/commit/923fba83)
+> **"general: long double issues"** (grischka, 2026-05-02) —
+> "init_putv(): improve long double cross constants"
 
-**Green CI = the bug reproduced and is bounded**: the input is valid, flex
-2.5.39-compiled-by-tcc works on both arches with *current upstream* tcc —
-the failure is specific to the bootstrap chain's tcc vintage on riscv64
-(and is evidently absent/fixed upstream, which makes a bisect of the fork
-against mob attractive).
+So: the bootstrap chain pinned mob inside a ~2-year window where riscv64
+long-double constant emission was broken; current mob is fixed.
 
-Interesting extra data point: the failure is *input-dependent*. Trivial
-`.l` files, `%x` start conditions, and `gengtype-lex.l`'s exact `%option`
-combination all pass through the failing binary; the full file crashes it.
-Hence the minimizer — whose result ([`minimized.l`](minimized.l), 12 lines
-from 213 in 191 oracle calls) points at a **trailing-context rule**
-(`^{HWS}typedef/{EOID}` — the `/` lookahead operator) combined with a name
-definition and a start condition as the load-bearing ingredients.
+## The matrix (what CI shows — everything built from source)
+
+| leg | expected |
+|---|---|
+| `log10-probe` vs musl 1.1.24 built by **chain-vintage tcc** | **crashes** |
+| `log10-probe` vs musl 1.1.24 built by **upstream mob tcc** | correct values |
+| flex by upstream tcc, x86_64, gcc-musl | passes |
+| flex by upstream tcc, riscv64, gcc-musl | passes |
+| flex by chain-vintage tcc, riscv64, **gcc-musl** | passes (vintage-compiled flex code is fine) |
+| flex by chain-vintage tcc, riscv64, vintage-built musl | informational* |
+
+\* the corrupted-constant defect manifests layout-dependently; the flexfatal
+symptom is reliable against the Guix chain's own store-built `musl-boot0`
+(rebuildable only via the Guix bootstrap:
+`guix build -L . -e '(@@ (commencement) flex-boot)' --system=riscv64-linux`
+in a commencement.scm checkout), while locally rebuilt defective libcs may
+crash elsewhere or dodge the corruption. The probe legs assert the defect
+deterministically.
 
 ## Usage
 
 ```sh
-./setup.sh      # build legs 1-2 (needs gcc, riscv64-linux-gnu-gcc, qemu-user)
-./repro.sh      # run the matrix, exit 0 iff it looks exactly as above
-./minimize.py   # ddmin gengtype-lex.l -> minimized.l, preserving
-                #   x86-tcc-flex PASSES && chain-riscv64-flex FAILS
+./setup.sh            # build all legs (needs gcc, riscv64-linux-gnu-gcc, qemu-user)
+./repro.sh            # run the matrix; exit 0 iff it looks exactly as above
+./minimize.py         # ddmin an input, preserving pass-on-x86 / fail-on-riscv64
+# bisect (already done, result above) — reproduce with:
+#   cd build/tinycc && export MUSL_TARBALL=$PWD/../musl-1.1.24.tar.gz \
+#     PROBE=$PWD/../../log10-probe.c
+#   git bisect start --term-old=broken --term-new=fixed
+#   git bisect broken 8cd21e91 && git bisect fixed d9d02c5
+#   git bisect run ../../bisect-run-wrapper.sh
 ```
 
-## Caveats
+## Notes and caveats
 
-* All riscv64 execution here is **qemu-user** (10.x locally, distro
-  qemu-user-static in CI), not silicon. The gcc-built and
-  upstream-tcc-built riscv64 flex binaries passing under the same qemu is
-  strong evidence the emulator is not the culprit, but a confirmation on
-  real RISC-V hardware would be welcome.
-* `gengtype-lex.l` is from GCC 4.6.4 (GPLv3+; header kept intact), via
-  [ekaitz-zarraga/gcc](https://github.com/ekaitz-zarraga/gcc) (the RISC-V
-  backport of GCC 4.6.4 used by the bootstrap chain).
+* All riscv64 execution is qemu-user. The defect is **not** an emulator
+  artifact: Debian's qemu 7.2 and a locally built qemu 10.0.11 agree on
+  every verdict here.
+* `tcc-chain-vintage/` is vendored *source* (no binaries in this repo): the
+  fork branch the chain pinned no longer exists upstream (rebased away), so
+  the content-addressed snapshot is preserved here with provenance.
+* `gengtype-lex.l` is from GCC 4.6.4 (GPLv3+; header intact) via the
+  chain's [GCC 4.6.4 riscv64 backport](https://github.com/ekaitz-zarraga/gcc).
+* An earlier revision of this repo claimed the bug was fork-specific and
+  vendored the chain's failing flex binary; both were superseded by the
+  analysis above (the pinned tree turned out to be *unmodified upstream mob*
+  of 2024-06-01, and everything now builds from source).
 
-## Where this is being reported
+## Fix recommendations for the bootstrap chain
 
-* tcc: `tinycc-devel@nongnu.org` (upstream), and the bootstrap-chain
-  angle to Ekaitz Zarraga alongside commencement.scm work.
-* flex is *not* suspected (gcc-built flex 2.5.39 handles the same input
-  everywhere); if root-causing ever shows flex-side UB, cross-file to
-  westes/flex.
+1. Re-pin `tcc-boot` in commencement.scm to mob ≥
+   [`923fba83`](https://github.com/TinyCC/tinycc/commit/923fba83) (or
+   backport that commit), then rebuild `musl-boot0` and everything above it.
+2. Until then: nothing in the chain below flex actually consumes the broken
+   `log10` — the chain reached GCC 9.5 despite it — but any tcc-era package
+   calling libm long-double paths is at risk.
+
+## Reporting
+
+* The underlying tcc bug is **already fixed upstream** (`923fba83`); the
+  actionable report is to the bootstrap chain (re-pin), plus optionally a
+  regression test offered to tinycc-devel@nongnu.org.
