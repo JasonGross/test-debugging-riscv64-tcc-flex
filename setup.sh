@@ -92,7 +92,7 @@ build_flex() {
       > conf.log 2>&1
     make -C lib > lib.log 2>&1
     make flex -j"$(nproc)" > make.log 2>&1 || true   # link step fails under libtool
-    "$cc" -nostdlib "$sys/lib/crt1.o" "$sys/lib/crti.o" *.o lib/.libs/libcompat.a \
+    "$cc" -static -nostdlib "$sys/lib/crt1.o" "$sys/lib/crti.o" *.o lib/.libs/libcompat.a \
       "$sys/lib/libc.a" "$libtcc1" "$sys/lib/libc.a" "$sys/lib/crtn.o" -o flex )
 }
 
