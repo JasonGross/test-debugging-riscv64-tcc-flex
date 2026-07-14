@@ -1,0 +1,6 @@
+build*/
+minimized.l.tmp*
+*.pyc
+setup-fresh.log
+repro-fresh.log
+tmp*.l
