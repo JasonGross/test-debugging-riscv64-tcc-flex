@@ -41,7 +41,10 @@ against mob attractive).
 Interesting extra data point: the failure is *input-dependent*. Trivial
 `.l` files, `%x` start conditions, and `gengtype-lex.l`'s exact `%option`
 combination all pass through the failing binary; the full file crashes it.
-Hence the minimizer.
+Hence the minimizer — whose result ([`minimized.l`](minimized.l), 12 lines
+from 213 in 191 oracle calls) points at a **trailing-context rule**
+(`^{HWS}typedef/{EOID}` — the `/` lookahead operator) combined with a name
+definition and a start condition as the load-bearing ingredients.
 
 ## Usage
 
