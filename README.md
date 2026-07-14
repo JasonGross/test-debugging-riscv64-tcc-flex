@@ -4,6 +4,31 @@ Reproducer and root-cause analysis for a TinyCC riscv64 **long-double
 codegen bug** that broke the riscv64 Guix full-source bootstrap
 ([ekaitz-zarraga/commencement.scm](https://codeberg.org/ekaitz-zarraga/commencement.scm)).
 
+## TL;DR
+
+The bug is a **TinyCC riscv64 long-double codegen defect**. The minimal
+reproducer is a single long-double constant — no libm, no libc math, no flex
+(`longdouble-const.c`):
+
+```c
+long double x = 0.30102999566398119521L;   /* log10(2) */
+double d = (double) x;                       /* chain-vintage tcc: wrong value */
+```
+
+The chain-vintage tcc emits that constant corrupted; upstream mob ≥
+[`923fba83`](https://github.com/TinyCC/tinycc/commit/923fba83) emits it
+correctly. Everything below is how it surfaced in the wild and how it was
+bisected.
+
+## NOT a self-miscompilation
+
+An earlier revision framed this as tcc miscompiling *itself*. **That is
+wrong and retracted.** The chain-vintage tcc compiles the TinyCC source into
+a working riscv64 tcc that correctly compiles and runs programs — tcc's own
+source doesn't exercise the broken long-double-constant path. The defect
+only bites code that *uses* long-double constants, which is why it hid until
+musl's libm (`log10`, built by that tcc) tripped it.
+
 ## Symptom → root cause
 
 The original symptom: flex 2.5.39, built inside the bootstrap chain, dies on
@@ -17,7 +42,8 @@ Delta-debugging the input (213 → 12 lines, `minimize.py` / `minimized.l`)
 pointed at flex's start-condition handling; reading that call site
 (`main.c:456`) shows the allocation size is computed with **`log10(i)`** —
 and the crash is the allocation "failing" because **musl's `log10` returns
-garbage** (or segfaults outright: `log10-probe.c`).
+garbage** (or segfaults outright: `log10-probe.c`), because that musl was
+built by the miscompiling tcc.
 
 The libc is the broken artifact, not flex: byte-identical flex objects work
 when linked against a gcc-built musl and fail against the chain's tcc-built
@@ -41,6 +67,8 @@ long-double constant emission was broken; current mob is fixed.
 
 | leg | expected |
 |---|---|
+| `longdouble-const` compiled by **chain-vintage tcc** | **wrong value** (minimal repro) |
+| `longdouble-const` compiled by **upstream mob tcc** | correct |
 | `log10-probe` vs musl 1.1.24 built by **chain-vintage tcc** | **crashes** |
 | `log10-probe` vs musl 1.1.24 built by **upstream mob tcc** | correct values |
 | flex by upstream tcc, x86_64, gcc-musl | passes |

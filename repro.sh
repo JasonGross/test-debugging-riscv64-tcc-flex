@@ -45,6 +45,20 @@ linkprobe "$B/probe-vintage" "$VIN/riscv64-tcc -B$VIN" "$B/sys-chain-vintage" \
 linkprobe "$B/probe-mob" "$TP/bin/riscv64-tcc" "$B/sys-chain-mob" \
   "$TP/lib/tcc/riscv64-libtcc1.a" -I"$TP/lib/tcc/include"
 
+# the minimal root-cause test: a lone long-double constant, no libm, linked
+# against the shared gcc-built musl (libc is only startup here — the constant
+# is emitted by whichever tcc compiles it).
+S="$B/sysroot-riscv64"
+buildlt() { # buildlt <out> <tcc-string> <libtcc1> <includes...>
+  local out="$1" tcc="$2" lib1="$3"; shift 3
+  $tcc -static -nostdinc "$@" -I"$S/include" -nostdlib \
+    "$S/lib/crt1.o" "$S/lib/crti.o" longdouble-const.c \
+    "$S/lib/libc.a" "$lib1" "$S/lib/libc.a" "$S/lib/crtn.o" \
+    -o "$out" 2>/dev/null
+}
+buildlt "$B/lt-vintage" "$VIN/riscv64-tcc -B$VIN" "$VIN/riscv64-libtcc1.a" -I"$VIN/include"
+buildlt "$B/lt-mob" "$TP/bin/riscv64-tcc" "$TP/lib/tcc/riscv64-libtcc1.a" -I"$TP/lib/tcc/include"
+
 FAILED=0
 run() { # run <label> <expect: pass|probe-ok|crash|fail-magic> <cmd...>
   local label="$1" expect="$2"; shift 2
@@ -54,6 +68,7 @@ run() { # run <label> <expect: pass|probe-ok|crash|fail-magic> <cmd...>
   case "$expect" in
     pass)       [ $rc -eq 0 ] && verdict=OK ;;
     probe-ok)   [ $rc -eq 0 ] && grep -q "log10(2) = 0.301030" "$out" && verdict=OK ;;
+    ldbad)      [ $rc -eq 2 ] || [ $rc -eq 3 ] && verdict=OK ;;  # corrupted long-double constant
     crash)      [ $rc -ge 128 ] && verdict=OK ;;
     fail-magic) [ $rc -ne 0 ] && grep -q "$MAGIC" "$err" && verdict=OK ;;
   esac
@@ -66,6 +81,8 @@ run() { # run <label> <expect: pass|probe-ok|crash|fail-magic> <cmd...>
 }
 
 echo "flex input: $INPUT"
+run "long-double const / vintage tcc"     ldbad      $QEMU "$B/lt-vintage"
+run "long-double const / mob tcc"         pass       $QEMU "$B/lt-mob"
 run "probe / vintage-tcc-built musl"      crash      $QEMU "$B/probe-vintage"
 run "probe / mob-tcc-built musl"          probe-ok   $QEMU "$B/probe-mob"
 run "flex upstream-tcc x86_64 gcc-musl"   pass       "$B/bx86/flex" -t "$INPUT"
