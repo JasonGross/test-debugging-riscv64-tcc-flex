@@ -6,6 +6,12 @@ codegen bug** that broke the riscv64 Guix full-source bootstrap
 
 ## TL;DR
 
+> **Correction (2026-07-27):** the analysis below holds for the
+> configuration this repository's CI builds (an x86_64-hosted *cross*
+> riscv64-tcc). The bootstrap chain's own flex breakage has a different
+> root cause and is **not** fixed by re-pinning tcc — see
+> [Root cause, corrected](#root-cause-corrected-2026-07-27).
+
 The bug is a **TinyCC riscv64 long-double codegen defect**. The minimal
 reproducer is a single long-double constant — no libm, no libc math, no flex
 (`longdouble-const.c`):
@@ -28,6 +34,49 @@ a working riscv64 tcc that correctly compiles and runs programs — tcc's own
 source doesn't exercise the broken long-double-constant path. The defect
 only bites code that *uses* long-double constants, which is why it hid until
 musl's libm (`log10`, built by that tcc) tripped it.
+
+## Root cause, corrected (2026-07-27)
+
+An earlier revision of this README blamed the chain's broken libm on tcc's
+long-double constant emission and recommended re-pinning tcc to mob
+[`923fba83`](https://github.com/TinyCC/tinycc/commit/923fba83) or later.
+That emission bug is real and `923fba83` fixes it, but it only fires in the
+configuration this repository's CI builds — a cross riscv64-tcc on an
+x86_64 host, where `init_putv` copies the host's x87 80-bit image into the
+16-byte binary128 slot. It is not what breaks the bootstrap chain, and a
+re-pin alone would not fix the chain.
+
+The chain's tcc runs natively and its emission path is value-preserving.
+The defect is earlier: tcc's `parse_number()` converts decimal FP literals
+with the runtime `strtof`/`strtod`/`strtold` of the libc the tcc binary
+itself links (as of mob `85ba3ae8`: tccpp.c:2438-2445), and hex-float
+literals via runtime `ldexp`. The chain's tcc links GNU Mes' libc, where
+
+1. `strtod`'s backend `abtod` divides the whole fractional digit string by
+   10 once, however many digits it has (`"0.25"` parses as 2.5);
+2. the digit accumulator `abtol` wraps in a 32-bit `int`;
+3. negative decimal exponents are applied one decade short (`"5e-1"` → 5.0);
+4. `strtof` and `strtold` alias `strtod`, so all three tcc conversion calls
+   funnel into the same broken backend;
+5. `ldexp` is a `return 0;` stub, so every hex-float literal parses to 0.0.
+
+Every nontrivial FP constant such a tcc emits is garbage. musl's own
+`log10.c` constant `log10_2hi` (`3.01029995663611771306e-01`) parses to
+137191264.8, and flex 2.5.39 — which sizes a per-start-condition
+allocation with `(int)(1 + log10(i))`, here 137191265 — dies with
+`fatal internal error, allocation of macro definition failed`.
+
+Each step is demonstrated by green public CI in
+[bootstrap-chain-bug-reproducers](https://github.com/JasonGross/bootstrap-chain-bug-reproducers)
+(rows 1, 2, 5, 23; row 23 asserts the exact bits and the 137191265
+arithmetic, with a per-run ablation proving the assertions would notice
+the bug's absence). The chain fix is an integer-only FP-literal parser in
+tccpp.c, with a binary128 path for riscv64:
+[`tccpp-integer-fp-literals`](https://github.com/JasonGross/tinycc/tree/tccpp-integer-fp-literals)
+(against the chain-pinned mob base `8cd21e91`). In our chain replay (not
+CI-checked in this repository) the rebuilt tcc → musl → flex survives
+gengtype-lex.l. The sections below on the cross defect and the `923fba83`
+bisection remain valid for what this repository's CI demonstrates.
 
 ## Symptom → root cause
 
@@ -115,9 +164,11 @@ deterministically.
 
 ## Fix recommendations for the bootstrap chain
 
-1. Re-pin `tcc-boot` in commencement.scm to mob ≥
+1. ~~Re-pin `tcc-boot` in commencement.scm to mob ≥
    [`923fba83`](https://github.com/TinyCC/tinycc/commit/923fba83) (or
-   backport that commit), then rebuild `musl-boot0` and everything above it.
+   backport that commit), then rebuild `musl-boot0` and everything above
+   it.~~ **Superseded — insufficient for the chain; see
+   [Root cause, corrected](#root-cause-corrected-2026-07-27).**
 2. Until then: nothing in the chain below flex actually consumes the broken
    `log10` — the chain reached GCC 9.5 despite it — but any tcc-era package
    calling libm long-double paths is at risk.
@@ -127,3 +178,9 @@ deterministically.
 * The underlying tcc bug is **already fixed upstream** (`923fba83`); the
   actionable report is to the bootstrap chain (re-pin), plus optionally a
   regression test offered to tinycc-devel@nongnu.org.
+
+---
+
+*Authorship note: this repository (analysis, reproducers, and
+documentation) was researched and written by Claude (Anthropic's Fable 5
+model), working on Jason Gross's behalf.*
