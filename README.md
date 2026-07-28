@@ -1,8 +1,12 @@
 # test-debugging-riscv64-tcc-flex
 
 Reproducer and root-cause analysis for a TinyCC riscv64 **long-double
-codegen bug** that broke the riscv64 Guix full-source bootstrap
+codegen bug**, found while investigating a flex failure in the riscv64 Guix
+full-source bootstrap
 ([ekaitz-zarraga/commencement.scm](https://codeberg.org/ekaitz-zarraga/commencement.scm)).
+The codegen bug is real and is what this repository's CI demonstrates, but it
+is **not** what breaks that bootstrap — see
+[Root cause, corrected](#root-cause-corrected-2026-07-27).
 
 ## TL;DR
 
@@ -169,15 +173,22 @@ deterministically.
    backport that commit), then rebuild `musl-boot0` and everything above
    it.~~ **Superseded — insufficient for the chain; see
    [Root cause, corrected](#root-cause-corrected-2026-07-27).**
-2. Until then: nothing in the chain below flex actually consumes the broken
-   `log10` — the chain reached GCC 9.5 despite it — but any tcc-era package
-   calling libm long-double paths is at risk.
+2. For the chain itself, the fix is an integer-only FP-literal parser in
+   tccpp.c (see [Root cause, corrected](#root-cause-corrected-2026-07-27)).
+   The exposure is wider than long double: *every* nontrivial FP constant
+   compiled by a chain tcc is affected, hex-float literals included. That
+   the chain reached GCC 9.5 anyway reflects how little below flex consumes
+   those constants, not that they are correct.
 
 ## Reporting
 
-* The underlying tcc bug is **already fixed upstream** (`923fba83`); the
-  actionable report is to the bootstrap chain (re-pin), plus optionally a
-  regression test offered to tinycc-devel@nongnu.org.
+* The long-double codegen bug this repository demonstrates is **already
+  fixed upstream** (`923fba83`), and it was reported to the tcc fork the
+  chain pins.
+* Re-pinning is **not** the actionable fix for the bootstrap chain: the
+  chain's failure has a different root cause, and the fix is an integer-only
+  FP-literal parser in tccpp.c. See
+  [Root cause, corrected](#root-cause-corrected-2026-07-27).
 
 ---
 
