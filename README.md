@@ -175,10 +175,13 @@ deterministically.
    [Root cause, corrected](#root-cause-corrected-2026-07-27).**
 2. For the chain itself, the fix is an integer-only FP-literal parser in
    tccpp.c (see [Root cause, corrected](#root-cause-corrected-2026-07-27)).
-   The exposure is wider than long double: *every* nontrivial FP constant
-   compiled by a chain tcc is affected, hex-float literals included. That
-   the chain reached GCC 9.5 anyway reflects how little below flex consumes
-   those constants, not that they are correct.
+   The exposure is wider than long double: any constant with two or more
+   fractional digits, a negative exponent, or a mantissa long enough to wrap
+   the 32-bit accumulator is affected, as is every hex-float literal. (A
+   constant with at most one fractional digit and no negative exponent, such
+   as `0.5`, does parse correctly.) That the chain reached GCC 9.5 anyway
+   reflects how little below flex consumes the affected constants, not that
+   they are correct.
 
 ## Reporting
 
