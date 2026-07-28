@@ -177,9 +177,8 @@ deterministically.
    tccpp.c (see [Root cause, corrected](#root-cause-corrected-2026-07-27)).
    The exposure is wider than long double: any constant with two or more
    fractional digits, a negative exponent, or a mantissa long enough to wrap
-   the 32-bit accumulator is affected, as is every hex-float literal. (A
-   constant with at most one fractional digit and no negative exponent, such
-   as `0.5`, does parse correctly.) That the chain reached GCC 9.5 anyway
+   the 32-bit accumulator is affected, as is every hex-float literal. (`0.5`, for
+   instance, parses correctly.) That the chain reached GCC 9.5 anyway
    reflects how little below flex consumes the affected constants, not that
    they are correct.
 
